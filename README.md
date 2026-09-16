@@ -30,7 +30,9 @@ cmake --build build --config Release
 
 Windows 可能将新图标放入任务栏的隐藏图标区域，点击托盘旁的箭头即可找到。
 
-日志窗口显示 `Listening for process starts.` 后，启动其他程序即可查看输出。若显示 `Access denied`，请以管理员身份运行；其他监听错误也会输出 HRESULT。使用托盘菜单的 `Exit` 退出程序。
+程序内嵌 `requireAdministrator` 权限清单，正常双击启动时 Windows 会请求 UAC 管理员授权（已提升权限的环境不重复提示）；取消授权则程序不会启动，无需手动选择“以管理员身份运行”。
+
+日志窗口显示 `Listening for process starts.` 后，启动其他程序即可查看输出。若提升权限后仍显示 `Access denied`，需检查 WMI 权限或系统安全策略；其他监听错误也会输出 HRESULT。使用托盘菜单的 `Exit` 退出程序。
 
 日志窗口使用纯 Win32 窗口与只读 EDIT 控件实现，可选择、复制和滚动查看文本，不提供命令行输入。隐藏期间持续接收日志，最多保留最近约 256K 个 UTF-16 字符，超出时淘汰旧内容。工作线程通过有界缓冲区异步发送日志给 UI，避免关闭或隐藏窗口影响进程监听。无需更改 Windows 默认终端设置。
 

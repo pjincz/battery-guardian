@@ -1,0 +1,2 @@
+// Embed the application manifest as resource ID 1 (RT_MANIFEST = 24).
+1 24 "BatteryGuardian.manifest"

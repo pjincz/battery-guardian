@@ -42,7 +42,7 @@ void LogError(const wchar_t* operation, HRESULT error) {
     swprintf_s(message, L"%ls failed (HRESULT 0x%08lX).", operation, static_cast<unsigned long>(error));
     Log(message);
     if (error == E_ACCESSDENIED || error == WBEM_E_ACCESS_DENIED) {
-        Log(L"Access denied. Try running this application as administrator.");
+        Log(L"Access denied. Check WMI permissions or system security policy.");
     }
 }
 

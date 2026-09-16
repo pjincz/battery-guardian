@@ -11,7 +11,9 @@ call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
 if errorlevel 1 exit /b 1
 :compile
 if not exist build mkdir build
-cl /nologo /std:c++17 /W4 /utf-8 /EHsc /O2 main.cpp affinity_policy.cpp log_window.cpp /Fo:build\ /Fe:build\BatteryGuardian.exe /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib ole32.lib oleaut32.lib wbemuuid.lib
+rc /nologo /fo build\BatteryGuardian.res BatteryGuardian.rc
+if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++17 /W4 /utf-8 /EHsc /O2 main.cpp affinity_policy.cpp log_window.cpp build\BatteryGuardian.res /Fo:build\ /Fe:build\BatteryGuardian.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:NO user32.lib gdi32.lib shell32.lib ole32.lib oleaut32.lib wbemuuid.lib
 if errorlevel 1 exit /b %errorlevel%
 if not exist build\blacklist.txt copy /y blacklist.txt build\blacklist.txt >nul
 exit /b %errorlevel%
