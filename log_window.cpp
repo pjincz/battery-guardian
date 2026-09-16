@@ -2,6 +2,7 @@
 #define _UNICODE
 #define WIN32_LEAN_AND_MEAN
 #include "log_window.h"
+#include "app_icon.h"
 #include <string>
 
 namespace log_window {
@@ -77,7 +78,8 @@ HWND Create(HINSTANCE instance) {
     type.lpfnWndProc = WindowProc;
     type.hInstance = instance;
     type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    type.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    type.hIcon = LoadAppIcon(instance, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    type.hIconSm = LoadAppIcon(instance, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
     type.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     type.lpszClassName = kClassName;
     if (!RegisterClassExW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;

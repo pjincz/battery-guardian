@@ -9,6 +9,7 @@
 #include <atomic>
 #include "affinity_policy.h"
 #include "log_window.h"
+#include "app_icon.h"
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"BatteryGuardianTrayWindow";
@@ -163,7 +164,8 @@ bool AddTrayIcon(HWND window) {
     icon.uID = kTrayId;
     icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     icon.uCallbackMessage = kTrayMessage;
-    icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    icon.hIcon = LoadAppIcon(GetModuleHandleW(nullptr), GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+    if (!icon.hIcon) return false;
     lstrcpyW(icon.szTip, L"Battery Guardian");
     return Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
 }
@@ -255,6 +257,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     windowClass.cbSize = sizeof(windowClass);
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance;
+    windowClass.hIcon = LoadAppIcon(instance, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    windowClass.hIconSm = LoadAppIcon(instance, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
     windowClass.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&windowClass)) {
         MessageBoxW(nullptr, L"Failed to register the window class.", L"Battery Guardian", MB_OK | MB_ICONERROR);
