@@ -5,11 +5,31 @@ if(NOT WIN32)
     message(FATAL_ERROR "BatteryGuardian requires Windows")
 endif()
 
-add_executable(BatteryGuardian WIN32 main.cpp)
+add_executable(BatteryGuardian WIN32 main.cpp affinity_policy.cpp)
 target_compile_features(BatteryGuardian PRIVATE cxx_std_17)
 target_link_libraries(BatteryGuardian PRIVATE user32 shell32 ole32 oleaut32 wbemuuid)
 if(MSVC)
     target_compile_options(BatteryGuardian PRIVATE /W4 /utf-8)
 elseif(MINGW)
     target_link_options(BatteryGuardian PRIVATE -municode)
+endif()
+
+add_custom_command(TARGET BatteryGuardian POST_BUILD
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/blacklist.txt"
+        "-DDESTINATION=$<TARGET_FILE_DIR:BatteryGuardian>/blacklist.txt"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_blacklist.cmake"
+    VERBATIM)
+
+option(BATTERY_GUARDIAN_BUILD_TESTS "Build affinity policy checks" OFF)
+if(BATTERY_GUARDIAN_BUILD_TESTS)
+    enable_testing()
+    add_executable(affinity_policy_tests tests/affinity_policy_tests.cpp affinity_policy.cpp)
+    target_compile_features(affinity_policy_tests PRIVATE cxx_std_17)
+    target_include_directories(affinity_policy_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_target_properties(affinity_policy_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    if(MSVC)
+        target_compile_options(affinity_policy_tests PRIVATE /W4 /utf-8)
+    endif()
+    add_test(NAME affinity_policy COMMAND affinity_policy_tests)
 endif()

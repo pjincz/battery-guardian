@@ -6,14 +6,17 @@
 #include <wbemidl.h>
 #include <cstdio>
 #include <string>
+#include "affinity_policy.h"
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"BatteryGuardianTrayWindow";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kTrayId = 1;
 constexpr UINT kExitCommand = 1001;
+constexpr UINT kToggleTerminalCommand = 1002;
 UINT g_taskbarCreated = 0;
 HANDLE g_logOutput = INVALID_HANDLE_VALUE;
+HWND g_consoleWindow = nullptr;
 
 void Log(const wchar_t* text) {
     const std::wstring line = std::wstring(text) + L"\r\n";
@@ -42,6 +45,8 @@ void LogError(const wchar_t* operation, HRESULT error) {
 
 DWORD WINAPI MonitorProcesses(void* context) {
     const HANDLE stopEvent = static_cast<HANDLE>(context);
+    affinity::Policy policy;
+    policy.Initialize(Log);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
         LogError(L"CoInitializeEx", hr);
@@ -98,6 +103,23 @@ DWORD WINAPI MonitorProcesses(void* context) {
                 const HRESULT propertyResult = event->Get(L"ProcessName", 0, &name, nullptr, nullptr);
                 if (SUCCEEDED(propertyResult) && name.vt == VT_BSTR && name.bstrVal) {
                     Log(name.bstrVal);
+                    if (policy.Contains(name.bstrVal)) {
+                        VARIANT processId;
+                        VARIANT eventTime;
+                        VariantInit(&processId);
+                        VariantInit(&eventTime);
+                        HRESULT details = event->Get(L"ProcessID", 0, &processId, nullptr, nullptr);
+                        if (SUCCEEDED(details)) details = event->Get(L"TIME_CREATED", 0, &eventTime, nullptr, nullptr);
+                        if (SUCCEEDED(details)) details = VariantChangeType(&eventTime, &eventTime, 0, VT_UI8);
+                        if (SUCCEEDED(details) && (processId.vt == VT_I4 || processId.vt == VT_UI4)) {
+                            const DWORD pid = processId.vt == VT_UI4 ? processId.ulVal : static_cast<DWORD>(processId.lVal);
+                            policy.Apply(pid, name.bstrVal, eventTime.ullVal);
+                        } else {
+                            LogError(L"Read process start details", FAILED(details) ? details : E_UNEXPECTED);
+                        }
+                        VariantClear(&eventTime);
+                        VariantClear(&processId);
+                    }
                 } else {
                     LogError(L"Read ProcessName", FAILED(propertyResult) ? propertyResult : E_UNEXPECTED);
                 }
@@ -145,7 +167,13 @@ void ShowTrayMenu(HWND window) {
     if (!GetCursorPos(&position)) return;
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
-    if (!AppendMenuW(menu, MF_STRING, kExitCommand, L"Exit")) {
+    const bool canToggle = g_consoleWindow && IsWindow(g_consoleWindow);
+    const bool terminalVisible = canToggle && IsWindowVisible(g_consoleWindow)
+        && !IsIconic(g_consoleWindow);
+    if (!AppendMenuW(menu, MF_STRING | (canToggle ? MF_ENABLED : MF_GRAYED),
+            kToggleTerminalCommand, terminalVisible ? L"Hide Terminal" : L"Show Terminal")
+        || !AppendMenuW(menu, MF_SEPARATOR, 0, nullptr)
+        || !AppendMenuW(menu, MF_STRING, kExitCommand, L"Exit")) {
         DestroyMenu(menu);
         return;
     }
@@ -157,6 +185,11 @@ void ShowTrayMenu(HWND window) {
         position.x, position.y, window, nullptr));
     DestroyMenu(menu);
     PostMessageW(window, WM_NULL, 0, 0);
+    if (command == kToggleTerminalCommand && canToggle) {
+        // Keep the console allocated so monitoring and buffered output continue.
+        ShowWindow(g_consoleWindow, terminalVisible ? SW_HIDE : SW_RESTORE);
+        if (!terminalVisible) SetForegroundWindow(g_consoleWindow);
+    }
     if (command == kExitCommand) DestroyWindow(window);
 }
 
@@ -216,7 +249,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         DestroyWindow(window);
         return 1;
     }
-    if (ownsConsole) SetConsoleTitleW(L"Battery Guardian - Process Monitor");
+    if (ownsConsole) {
+        SetConsoleTitleW(L"Battery Guardian - Process Monitor");
+        // Only control our own console, never a terminal inherited from a caller.
+        g_consoleWindow = GetConsoleWindow();
+    }
 
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     HANDLE monitorThread = nullptr;
@@ -240,6 +277,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         CloseHandle(monitorThread);
     }
     if (stopEvent) CloseHandle(stopEvent);
+    g_consoleWindow = nullptr;
     if (ownsConsole) FreeConsole();
     return result == -1 ? 1 : static_cast<int>(message.wParam);
 }

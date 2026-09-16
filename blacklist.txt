@@ -1,0 +1,4 @@
+# UTF-8 text. One executable filename per line, matched case-insensitively.
+# Blank lines and lines starting with # are ignored.
+# Uncomment or add executable names below, then restart Battery Guardian.
+# example.exe
