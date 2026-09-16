@@ -6,6 +6,7 @@
 #include <wbemidl.h>
 #include <cstdio>
 #include <string>
+#include <atomic>
 #include "affinity_policy.h"
 #include "log_window.h"
 
@@ -15,6 +16,9 @@ constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kTrayId = 1;
 constexpr UINT kExitCommand = 1001;
 constexpr UINT kToggleTerminalCommand = 1002;
+constexpr UINT kReloadBlacklistCommand = 1003;
+std::atomic<bool> g_reloadRequested{false};
+HANDLE g_monitorThread = nullptr;
 UINT g_taskbarCreated = 0;
 HANDLE g_logOutput = INVALID_HANDLE_VALUE;
 HWND g_consoleWindow = nullptr;
@@ -100,6 +104,8 @@ DWORD WINAPI MonitorProcesses(void* context) {
                 if (event) event->Release();
                 return result;
             }
+            // All policy changes run on this thread, between event deliveries.
+            if (g_reloadRequested.exchange(false)) policy.Reload();
             if (count != 0 && event) {
                 VARIANT name;
                 VariantInit(&name);
@@ -181,8 +187,12 @@ void ShowTrayMenu(HWND window) {
     const bool canToggle = g_consoleWindow && IsWindow(g_consoleWindow);
     const bool terminalVisible = canToggle && IsWindowVisible(g_consoleWindow)
         && !IsIconic(g_consoleWindow);
+    const bool canReload = g_monitorThread
+        && WaitForSingleObject(g_monitorThread, 0) == WAIT_TIMEOUT;
     if (!AppendMenuW(menu, MF_STRING | (canToggle ? MF_ENABLED : MF_GRAYED),
             kToggleTerminalCommand, terminalVisible ? L"Hide Terminal" : L"Show Terminal")
+        || !AppendMenuW(menu, MF_STRING | (canReload ? MF_ENABLED : MF_GRAYED),
+            kReloadBlacklistCommand, L"Reload blacklist.txt")
         || !AppendMenuW(menu, MF_SEPARATOR, 0, nullptr)
         || !AppendMenuW(menu, MF_STRING, kExitCommand, L"Exit")) {
         DestroyMenu(menu);
@@ -199,6 +209,10 @@ void ShowTrayMenu(HWND window) {
     DestroyMenu(menu);
     PostMessageW(window, WM_NULL, 0, 0);
     if (command == kToggleTerminalCommand) ToggleTerminal();
+    if (command == kReloadBlacklistCommand && canReload) {
+        g_reloadRequested.store(true);
+        Log(L"Blacklist reload requested.");
+    }
     if (command == kExitCommand) DestroyWindow(window);
 }
 
@@ -267,6 +281,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     HANDLE monitorThread = nullptr;
     if (stopEvent) {
         monitorThread = CreateThread(nullptr, 0, MonitorProcesses, stopEvent, 0, nullptr);
+        g_monitorThread = monitorThread;
         if (!monitorThread) LogError(L"CreateThread", HRESULT_FROM_WIN32(GetLastError()));
     } else {
         LogError(L"CreateEvent", HRESULT_FROM_WIN32(GetLastError()));
@@ -283,6 +298,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         SetEvent(stopEvent);
         WaitForSingleObject(monitorThread, INFINITE);
         CloseHandle(monitorThread);
+        g_monitorThread = nullptr;
     }
     if (stopEvent) CloseHandle(stopEvent);
     g_consoleWindow = nullptr;

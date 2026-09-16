@@ -166,14 +166,7 @@ void Policy::Initialize(Logger logger) {
     log_ = logger;
     names_.clear();
     mask_ = 0;
-    std::string bytes;
-    std::wstring error;
-    if (!ReadBlacklist(bytes, log_) || !ParseBlacklist(bytes, names_, error)) {
-        if (!error.empty()) log_(error.c_str());
-        log_(L"Blacklist unavailable. Affinity changes are disabled.");
-        return;
-    }
-    log_((L"Blacklist loaded: " + std::to_wstring(names_.size()) + L" executable name(s).").c_str());
+    if (!Reload()) log_(L"No initial blacklist loaded. No executable names are active.");
     mask_ = DetectEfficiencyMask(log_);
     if (!mask_) {
         log_(L"No unambiguous E-core mask available. Affinity changes are disabled.");
@@ -183,6 +176,20 @@ void Policy::Initialize(Logger logger) {
     swprintf_s(message, L"E-core affinity mask: 0x%llX (lowest EfficiencyClass).",
         static_cast<unsigned long long>(mask_));
     log_(message);
+}
+
+bool Policy::Reload() {
+    std::string bytes;
+    std::wstring error;
+    std::vector<std::wstring> replacement;
+    if (!ReadBlacklist(bytes, log_) || !ParseBlacklist(bytes, replacement, error)) {
+        if (!error.empty()) log_(error.c_str());
+        log_(L"Blacklist reload failed. Previous rules are unchanged.");
+        return false;
+    }
+    names_.swap(replacement);
+    log_((L"Blacklist loaded: " + std::to_wstring(names_.size()) + L" executable name(s).").c_str());
+    return true;
 }
 
 bool Policy::Contains(const wchar_t* name) const {

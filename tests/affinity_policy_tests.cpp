@@ -94,8 +94,27 @@ void CheckActualProcess() {
     affinity::Policy policy;
     policy.Initialize(Capture);
     Check(policy.Contains(filename.c_str()), "Load blacklist from exe directory, not working directory");
+    const auto replaceFixture = [&](const std::string& contents) {
+        HANDLE replacement = CreateFileW(fixture.c_str(), GENERIC_WRITE, 0, nullptr,
+            TRUNCATE_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (replacement == INVALID_HANDLE_VALUE) return false;
+        DWORD countWritten = 0;
+        const bool ok = WriteFile(replacement, contents.data(), static_cast<DWORD>(contents.size()),
+            &countWritten, nullptr) && countWritten == contents.size();
+        CloseHandle(replacement);
+        return ok;
+    };
+    Check(replaceFixture("replacement.exe\n") && policy.Reload()
+        && policy.Contains(L"REPLACEMENT.EXE") && !policy.Contains(filename.c_str()),
+        "Reload atomically replaces previous names");
+    Check(replaceFixture("*.exe\n") && !policy.Reload() && policy.Contains(L"replacement.exe"),
+        "Invalid reload preserves active rules");
+    Check(replaceFixture("") && policy.Reload() && !policy.Contains(L"replacement.exe"),
+        "Empty reload clears active rules");
+    Check(replaceFixture(bytes) && policy.Reload() && policy.Contains(filename.c_str()),
+        "Reload restores updated rules without restarting");
     Check(DeleteFileW(fixture.c_str()) != FALSE, "Remove test fixture");
-    Check(policy.Contains(filename.c_str()), "Blacklist remains a startup snapshot");
+    Check(!policy.Reload() && policy.Contains(filename.c_str()), "Missing file on reload preserves active rules");
 
     const size_t marker = logs.find(L"E-core affinity mask: 0x");
     const DWORD_PTR expected = marker == std::wstring::npos ? 0

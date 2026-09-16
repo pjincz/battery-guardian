@@ -21,6 +21,7 @@ DWORD_PTR SelectEfficiencyMask(const std::vector<Core>& cores);
 class Policy {
 public:
     void Initialize(Logger logger);
+    bool Reload();
     bool Contains(const wchar_t* name) const;
     bool Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTime) const;
 
