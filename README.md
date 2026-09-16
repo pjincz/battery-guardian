@@ -2,12 +2,12 @@
 
 纯 C++ / Win32 API 托盘程序，无第三方框架或依赖库。
 
-- 启动后显示系统默认应用程序托盘图标和调试控制台，不显示主窗口。
+- 启动后显示系统默认应用程序托盘图标和终端式日志窗口。
 - 通过 Windows 自带 WMI 的 `Win32_ProcessStartTrace` 事件监听新进程，每行输出一个 exe 文件名（不包含完整路径）。监听就绪前已启动的进程不会补报。
-- 监听运行在独立线程；退出时停止监听并释放 WMI、线程和控制台资源。
+- 监听运行在独立线程；退出时停止监听并释放 WMI、线程和日志窗口资源。
 - 启动时读取 exe 同目录下的 `blacklist.txt`，命中的新进程通过 `SetProcessAffinityMask` 绑定到 E 核。
 - 右键图标显示“Exit”菜单，点击后删除图标并退出程序。
-- 托盘菜单的 `Hide Terminal` / `Show Terminal` 可隐藏或显示调试控制台；最小化时显示 `Show Terminal`，点击可恢复窗口。隐藏后继续监听和输出日志，再次显示时保留控制台缓冲区内容。启动时仍默认显示控制台。
+- 托盘菜单的 `Hide Terminal` / `Show Terminal` 可隐藏或显示日志窗口；最小化时显示 `Show Terminal`，点击可恢复窗口。点击窗口的关闭按钮或按 Alt+F4 只隐藏窗口，程序继续运行。启动时默认显示窗口。
 - Windows 资源管理器重启后自动重新添加托盘图标。
 
 ## 编译和运行
@@ -30,9 +30,11 @@ cmake --build build --config Release
 
 Windows 可能将新图标放入任务栏的隐藏图标区域，点击托盘旁的箭头即可找到。
 
-控制台显示 `Listening for process starts.` 后，启动其他程序即可查看输出。若显示 `Access denied`，请以管理员身份运行；其他监听错误也会输出 HRESULT。直接关闭控制台窗口会结束整个程序，建议使用托盘菜单的 `Exit` 正常退出。
+日志窗口显示 `Listening for process starts.` 后，启动其他程序即可查看输出。若显示 `Access denied`，请以管理员身份运行；其他监听错误也会输出 HRESULT。使用托盘菜单的 `Exit` 退出程序。
 
-显示/隐藏功能使用 `GetConsoleWindow` 和 `ShowWindow`，适用于 Windows Console Host 的独立控制台窗口。如果默认终端由 Windows Terminal 托管，请在系统终端设置中选择 Windows Console Host；Windows Terminal 的伪控制台句柄不对应实际显示的终端窗口，无法用此方式控制其显示/隐藏。参见 [GetConsoleWindow 文档](https://learn.microsoft.com/en-us/windows/console/getconsolewindow)。
+日志窗口使用纯 Win32 窗口与只读 EDIT 控件实现，可选择、复制和滚动查看文本，不提供命令行输入。隐藏期间持续接收日志，最多保留最近约 256K 个 UTF-16 字符，超出时淘汰旧内容。工作线程通过有界缓冲区异步发送日志给 UI，避免关闭或隐藏窗口影响进程监听。无需更改 Windows 默认终端设置。
+
+这里不再使用 `AllocConsole`：原生控制台的关闭信号即便被处理也会结束进程，无法可靠实现关闭即隐藏。参见 [CTRL+CLOSE 文档](https://learn.microsoft.com/en-us/windows/console/ctrl-close-signal)。
 
 ## 黑名单与 E 核绑定
 

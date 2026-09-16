@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <string>
 #include "affinity_policy.h"
+#include "log_window.h"
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"BatteryGuardianTrayWindow";
@@ -20,6 +21,8 @@ HWND g_consoleWindow = nullptr;
 
 void Log(const wchar_t* text) {
     const std::wstring line = std::wstring(text) + L"\r\n";
+    log_window::Write(line.c_str());
+    if (!g_logOutput || g_logOutput == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
     DWORD mode = 0;
     if (GetConsoleMode(g_logOutput, &mode)) {
@@ -186,7 +189,7 @@ void ShowTrayMenu(HWND window) {
     DestroyMenu(menu);
     PostMessageW(window, WM_NULL, 0, 0);
     if (command == kToggleTerminalCommand && canToggle) {
-        // Keep the console allocated so monitoring and buffered output continue.
+        // Keep the log window alive so hidden output is retained.
         ShowWindow(g_consoleWindow, terminalVisible ? SW_HIDE : SW_RESTORE);
         if (!terminalVisible) SetForegroundWindow(g_consoleWindow);
     }
@@ -242,18 +245,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     HANDLE standardOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     const bool redirected = standardOutput && standardOutput != INVALID_HANDLE_VALUE
         && GetFileType(standardOutput) != FILE_TYPE_UNKNOWN;
-    const bool ownsConsole = AllocConsole() != FALSE;
-    g_logOutput = redirected ? standardOutput : GetStdHandle(STD_OUTPUT_HANDLE);
-    if (!ownsConsole && !redirected && (!g_logOutput || g_logOutput == INVALID_HANDLE_VALUE)) {
-        MessageBoxW(window, L"Failed to open the debug console.", L"Battery Guardian", MB_OK | MB_ICONERROR);
+    g_logOutput = redirected ? standardOutput : INVALID_HANDLE_VALUE;
+    g_consoleWindow = log_window::Create(instance);
+    if (!g_consoleWindow) {
+        MessageBoxW(window, L"Failed to create the terminal window.", L"Battery Guardian", MB_OK | MB_ICONERROR);
         DestroyWindow(window);
         return 1;
     }
-    if (ownsConsole) {
-        SetConsoleTitleW(L"Battery Guardian - Process Monitor");
-        // Only control our own console, never a terminal inherited from a caller.
-        g_consoleWindow = GetConsoleWindow();
-    }
+    ShowWindow(g_consoleWindow, SW_SHOW);
 
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     HANDLE monitorThread = nullptr;
@@ -278,6 +277,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     if (stopEvent) CloseHandle(stopEvent);
     g_consoleWindow = nullptr;
-    if (ownsConsole) FreeConsole();
+    log_window::Destroy();
     return result == -1 ? 1 : static_cast<int>(message.wParam);
 }
