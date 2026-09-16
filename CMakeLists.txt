@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.20)
+project(BatteryGuardian LANGUAGES CXX)
+
+if(NOT WIN32)
+    message(FATAL_ERROR "BatteryGuardian requires Windows")
+endif()
+
+add_executable(BatteryGuardian WIN32 main.cpp)
+target_compile_features(BatteryGuardian PRIVATE cxx_std_17)
+target_link_libraries(BatteryGuardian PRIVATE user32 shell32)
+if(MSVC)
+    target_compile_options(BatteryGuardian PRIVATE /W4 /utf-8)
+elseif(MINGW)
+    target_link_options(BatteryGuardian PRIVATE -municode)
+endif()
