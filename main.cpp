@@ -295,6 +295,25 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    // Keep the named mutex alive until all shutdown cleanup has completed.
+    struct InstanceMutex {
+        HANDLE handle;
+        ~InstanceMutex() { if (handle) CloseHandle(handle); }
+    } instanceMutex{CreateMutexW(nullptr, FALSE, L"Local\\BatteryGuardian.SingleInstance")};
+    const DWORD mutexError = GetLastError();
+    if (!instanceMutex.handle) {
+        MessageBoxW(nullptr, L"Failed to create the single-instance mutex.",
+            L"Battery Guardian", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    if (mutexError == ERROR_ALREADY_EXISTS) {
+        CloseHandle(instanceMutex.handle);
+        instanceMutex.handle = nullptr;
+        MessageBoxW(nullptr, L"Battery Guardian is already running. Click OK to exit this instance.",
+            L"Battery Guardian", MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
+
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     WNDCLASSEXW windowClass{};
     windowClass.cbSize = sizeof(windowClass);
