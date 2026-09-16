@@ -130,6 +130,9 @@ void CheckActualProcess() {
     DWORD_PTR original = 0;
     DWORD_PTR system = 0;
     Check(GetProcessAffinityMask(process.hProcess, &original, &system) != FALSE, "Read initial affinity");
+    // Use a custom original mask so restoring all CPUs cannot accidentally pass.
+    original = system & (~system + 1);
+    Check(SetProcessAffinityMask(process.hProcess, original) != FALSE, "Set custom original affinity");
     Check(!policy.Apply(process.dwProcessId, L"not-listed.exe", Now()), "Unlisted process unchanged");
     Check(!policy.Apply(process.dwProcessId, L"wrong-name.exe", Now()), "Mismatched process identity rejected");
     Check(!policy.Apply(process.dwProcessId, filename.c_str(), 1), "Stale event rejected");
@@ -142,6 +145,44 @@ void CheckActualProcess() {
         DWORD_PTR actual = 0;
         Check(GetProcessAffinityMask(process.hProcess, &actual, &system)
             && actual == (expected & system), "Read back exact E-core affinity mask");
+        policy.Apply(process.dwProcessId, filename.c_str(), Now());
+        policy.Apply(process.dwProcessId, filename.c_str(), Now());
+        policy.UnloadBlacklist();
+        Check(!policy.Contains(filename.c_str()), "Unloading disables blacklist matching");
+        Check(GetProcessAffinityMask(process.hProcess, &actual, &system) && actual == original,
+            "Repeated application restores the first custom original mask");
+
+        HANDLE fixtureFile = CreateFileW(fixture.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(fixtureFile != INVALID_HANDLE_VALUE, "Create reload lifecycle fixture");
+        if (fixtureFile != INVALID_HANDLE_VALUE) {
+            CloseHandle(fixtureFile);
+            Check(replaceFixture(bytes) && policy.Reload()
+                && GetProcessAffinityMask(process.hProcess, &actual, &system)
+                && actual == (expected & system), "Reload scans and binds an existing process");
+            Check(replaceFixture("*.exe\n") && !policy.Reload()
+                && GetProcessAffinityMask(process.hProcess, &actual, &system)
+                && actual == (expected & system), "Failed reload reapplies old rules to running processes");
+            Check(replaceFixture("") && policy.Reload()
+                && GetProcessAffinityMask(process.hProcess, &actual, &system)
+                && actual == original, "Removing a name restores the running process");
+            Check(replaceFixture(bytes), "Prepare startup scan fixture");
+            {
+                affinity::Policy startupPolicy;
+                const size_t logStart = logs.size();
+                startupPolicy.Initialize(Capture);
+                const auto loadLog = logs.substr(logStart);
+                const auto scan = loadLog.find(L"Scanning running processes");
+                Check(scan != std::wstring::npos
+                    && loadLog.find(L"Scanning running processes", scan + 1) == std::wstring::npos,
+                    "Loading the blacklist performs exactly one process scan");
+                Check(GetProcessAffinityMask(process.hProcess, &actual, &system)
+                    && actual == (expected & system), "Startup scans and binds an existing process");
+            }
+            Check(GetProcessAffinityMask(process.hProcess, &actual, &system) && actual == original,
+                "Policy shutdown restores the exact original affinity");
+            Check(DeleteFileW(fixture.c_str()) != FALSE, "Remove reload lifecycle fixture");
+        }
     } else {
         Check(!applied, "Unsupported topology does not change affinity");
         printf("SKIP: Hardware does not expose a supported heterogeneous topology.\n");

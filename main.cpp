@@ -53,7 +53,6 @@ void LogError(const wchar_t* operation, HRESULT error) {
 DWORD WINAPI MonitorProcesses(void* context) {
     const HANDLE stopEvent = static_cast<HANDLE>(context);
     affinity::Policy policy;
-    policy.Initialize(Log);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
         LogError(L"CoInitializeEx", hr);
@@ -94,6 +93,8 @@ DWORD WINAPI MonitorProcesses(void* context) {
         SysFreeString(query);
         if (FAILED(result)) return result;
 
+        // Subscribe first so a single load-time scan leaves no startup event gap.
+        policy.Initialize(Log);
         Log(L"Listening for process starts. Use the tray Exit menu to stop.");
         while (WaitForSingleObject(stopEvent, 0) == WAIT_TIMEOUT) {
             IWbemClassObject* event = nullptr;
@@ -103,6 +104,10 @@ DWORD WINAPI MonitorProcesses(void* context) {
             if (FAILED(result)) {
                 if (event) event->Release();
                 return result;
+            }
+            if (WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) {
+                if (event) event->Release();
+                return S_OK;
             }
             // All policy changes run on this thread, between event deliveries.
             if (g_reloadRequested.exchange(false)) policy.Reload();

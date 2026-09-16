@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <tlhelp32.h>
 
 namespace affinity {
 namespace {
@@ -14,6 +15,7 @@ public:
     explicit Handle(HANDLE value) : value_(value) {}
     ~Handle() { if (value_ && value_ != INVALID_HANDLE_VALUE) CloseHandle(value_); }
     HANDLE Get() const { return value_; }
+    HANDLE Release() { HANDLE value = value_; value_ = nullptr; return value; }
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
 private:
@@ -166,44 +168,122 @@ void Policy::Initialize(Logger logger) {
     log_ = logger;
     names_.clear();
     mask_ = 0;
-    if (!Reload()) log_(L"No initial blacklist loaded. No executable names are active.");
     mask_ = DetectEfficiencyMask(log_);
     if (!mask_) {
         log_(L"No unambiguous E-core mask available. Affinity changes are disabled.");
-        return;
+    } else {
+        wchar_t message[128]{};
+        swprintf_s(message, L"E-core affinity mask: 0x%llX (lowest EfficiencyClass).",
+            static_cast<unsigned long long>(mask_));
+        log_(message);
     }
-    wchar_t message[128]{};
-    swprintf_s(message, L"E-core affinity mask: 0x%llX (lowest EfficiencyClass).",
-        static_cast<unsigned long long>(mask_));
-    log_(message);
+    if (!LoadBlacklist()) log_(L"Initial blacklist load failed.");
 }
 
 bool Policy::Reload() {
+    UnloadBlacklist();
+    return LoadBlacklist();
+}
+
+bool Policy::LoadBlacklist() {
     std::string bytes;
     std::wstring error;
     std::vector<std::wstring> replacement;
     if (!ReadBlacklist(bytes, log_) || !ParseBlacklist(bytes, replacement, error)) {
         if (!error.empty()) log_(error.c_str());
         log_(L"Blacklist reload failed. Previous rules are unchanged.");
+        loaded_ = true;
+        ApplyAll();
         return false;
     }
     names_.swap(replacement);
+    loaded_ = true;
     log_((L"Blacklist loaded: " + std::to_wstring(names_.size()) + L" executable name(s).").c_str());
+    ApplyAll();
     return true;
 }
 
-bool Policy::Contains(const wchar_t* name) const {
-    return Matches(names_, name);
+void Policy::UnloadBlacklist() {
+    loaded_ = false;
+    RestoreAll();
 }
 
-bool Policy::Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTime) const {
+Policy::~Policy() {
+    UnloadBlacklist();
+    // Failed restores have already been reported. Release all remaining handles.
+    for (const auto& entry : originals_) CloseHandle(entry.second.process);
+}
+
+void Policy::ApplyAll() {
+    if (!mask_ || names_.empty()) return;
+    log_(L"Scanning running processes for blacklist matches.");
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    const ULONGLONG scanTime = (static_cast<ULONGLONG>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.Get() == INVALID_HANDLE_VALUE) {
+        ReportError(log_, L"Create process snapshot", GetLastError());
+        return;
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot.Get(), &entry)) {
+        if (GetLastError() != ERROR_NO_MORE_FILES) ReportError(log_, L"Read process snapshot", GetLastError());
+        return;
+    }
+    do {
+        if (Contains(entry.szExeFile)) Apply(entry.th32ProcessID, entry.szExeFile, scanTime);
+    } while (Process32NextW(snapshot.Get(), &entry));
+    if (GetLastError() != ERROR_NO_MORE_FILES) ReportError(log_, L"Enumerate processes", GetLastError());
+    log_(L"Running process scan completed.");
+}
+
+void Policy::RestoreAll() {
+    if (originals_.empty()) return;
+    log_(L"Restoring original process affinity masks.");
+    // Saved handles identify the exact processes, even after a PID is recycled.
+    for (auto entry = originals_.begin(); entry != originals_.end();) {
+        const auto& saved = entry->second;
+        bool discard = WaitForSingleObject(saved.process, 0) == WAIT_OBJECT_0;
+        const std::wstring label = saved.name + L" (PID " + std::to_wstring(entry->first) + L")";
+        if (!discard) {
+            if (SetProcessAffinityMask(saved.process, saved.mask)) {
+                log_((label + L": original affinity restored.").c_str());
+                discard = true;
+            } else {
+                ReportError(log_, (L"Restore affinity for " + label).c_str(), GetLastError());
+            }
+        }
+        if (discard) {
+            CloseHandle(saved.process);
+            entry = originals_.erase(entry);
+        } else {
+            ++entry; // Keep failed entries so the next restore can retry.
+        }
+    }
+}
+
+bool Policy::Contains(const wchar_t* name) const {
+    return loaded_ && Matches(names_, name);
+}
+
+bool Policy::Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTime) {
     if (!Contains(eventName)) return false;
+    // Release completed process objects during normal monitoring as well.
+    for (auto saved = originals_.begin(); saved != originals_.end();) {
+        if (WaitForSingleObject(saved->second.process, 0) == WAIT_OBJECT_0) {
+            CloseHandle(saved->second.process);
+            saved = originals_.erase(saved);
+        } else {
+            ++saved;
+        }
+    }
     const std::wstring label = std::wstring(eventName) + L" (PID " + std::to_wstring(processId) + L")";
     if (!mask_) {
         log_((label + L": skipped; E-core binding is unavailable.").c_str());
         return false;
     }
-    Handle process(OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION,
+    Handle process(OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
         FALSE, processId));
     if (!process.Get()) {
         ReportError(log_, (L"Open " + label).c_str(), GetLastError());
@@ -240,6 +320,16 @@ bool Policy::Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTim
     if (!SetProcessAffinityMask(process.Get(), target)) {
         ReportError(log_, (L"Set affinity for " + label).c_str(), GetLastError());
         return false;
+    }
+    auto saved = originals_.find(processId);
+    if (saved != originals_.end() && saved->second.creationTime != creationTime) {
+        CloseHandle(saved->second.process);
+        originals_.erase(saved);
+        saved = originals_.end();
+    }
+    // Repeated scans/events must not replace the first, pre-modification mask.
+    if (saved == originals_.end()) {
+        originals_.emplace(processId, OriginalAffinity{process.Release(), creationTime, previous, actualName});
     }
     wchar_t maskText[32]{};
     swprintf_s(maskText, L"0x%llX", static_cast<unsigned long long>(target));
