@@ -165,6 +165,14 @@ void RemoveTrayIcon(HWND window) {
     Shell_NotifyIconW(NIM_DELETE, &icon);
 }
 
+void ToggleTerminal() {
+    if (!g_consoleWindow || !IsWindow(g_consoleWindow)) return;
+    const bool visible = IsWindowVisible(g_consoleWindow) && !IsIconic(g_consoleWindow);
+    // Keep the log window alive so hidden output is retained.
+    ShowWindow(g_consoleWindow, visible ? SW_HIDE : SW_RESTORE);
+    if (!visible) SetForegroundWindow(g_consoleWindow);
+}
+
 void ShowTrayMenu(HWND window) {
     POINT position{};
     if (!GetCursorPos(&position)) return;
@@ -181,6 +189,8 @@ void ShowTrayMenu(HWND window) {
         return;
     }
 
+    SetMenuDefaultItem(menu, kToggleTerminalCommand, FALSE);
+
     // Foreground ownership lets a click outside the menu dismiss it normally.
     SetForegroundWindow(window);
     const UINT command = static_cast<UINT>(TrackPopupMenuEx(
@@ -188,11 +198,7 @@ void ShowTrayMenu(HWND window) {
         position.x, position.y, window, nullptr));
     DestroyMenu(menu);
     PostMessageW(window, WM_NULL, 0, 0);
-    if (command == kToggleTerminalCommand && canToggle) {
-        // Keep the log window alive so hidden output is retained.
-        ShowWindow(g_consoleWindow, terminalVisible ? SW_HIDE : SW_RESTORE);
-        if (!terminalVisible) SetForegroundWindow(g_consoleWindow);
-    }
+    if (command == kToggleTerminalCommand) ToggleTerminal();
     if (command == kExitCommand) DestroyWindow(window);
 }
 
@@ -206,7 +212,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_CREATE:
         return AddTrayIcon(window) ? 0 : -1;
     case kTrayMessage:
-        if (wParam == kTrayId && lParam == WM_RBUTTONUP) ShowTrayMenu(window);
+        if (wParam == kTrayId) {
+            if (lParam == WM_LBUTTONUP) ToggleTerminal();
+            else if (lParam == WM_RBUTTONUP) ShowTrayMenu(window);
+        }
         return 0;
     case WM_CLOSE:
         DestroyWindow(window);
