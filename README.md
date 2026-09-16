@@ -10,6 +10,7 @@
 - 托盘菜单的 `Hide Terminal` / `Show Terminal` 可隐藏或显示日志窗口；最小化时显示 `Show Terminal`，点击可恢复窗口。点击窗口的关闭按钮或按 Alt+F4 只隐藏窗口，程序继续运行。启动时默认显示窗口。
 - 左键单击托盘图标直接切换日志窗口的显示/隐藏；右键菜单中该操作以默认项加粗显示。
 - 右键菜单的 `Reload blacklist.txt` 重新读取名单，日志窗口显示加载结果；监听线程未运行时该选项不可用。
+- `Reload blacklist.txt` 前的 `Edit blacklist.txt` 使用 `notepad.exe` 打开 exe 同目录下的名单文件；编辑保存后点击 `Reload blacklist.txt` 应用修改。
 - Windows 资源管理器重启后自动重新添加托盘图标。
 
 配置生命周期统一为 `LoadBlacklist`（读取并应用）和 `UnloadBlacklist`（停止匹配并恢复）。启动时先建立 WMI 订阅，再加载名单，只进行一次全量扫描；重载执行卸载再加载；正常退出通过卸载恢复设置。

@@ -18,6 +18,7 @@ constexpr UINT kTrayId = 1;
 constexpr UINT kExitCommand = 1001;
 constexpr UINT kToggleTerminalCommand = 1002;
 constexpr UINT kReloadBlacklistCommand = 1003;
+constexpr UINT kEditBlacklistCommand = 1004;
 std::atomic<bool> g_reloadRequested{false};
 HANDLE g_monitorThread = nullptr;
 UINT g_taskbarCreated = 0;
@@ -186,6 +187,46 @@ void ToggleTerminal() {
     if (!visible) SetForegroundWindow(g_consoleWindow);
 }
 
+void EditBlacklist(HWND window) {
+    const auto reportFailure = [&](DWORD error) {
+        LogError(L"Open blacklist.txt in Notepad", HRESULT_FROM_WIN32(error));
+        MessageBoxW(window, L"Failed to open blacklist.txt in Notepad. See the terminal for details.",
+            L"Battery Guardian", MB_OK | MB_ICONERROR);
+    };
+    std::wstring path(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (!length || length >= path.size()) {
+        reportFailure(length ? ERROR_INSUFFICIENT_BUFFER : GetLastError());
+        return;
+    }
+    path.resize(length);
+    path.resize(path.find_last_of(L"\\/") + 1);
+    path += L"blacklist.txt";
+
+    std::wstring notepad(32768, L'\0');
+    const UINT systemLength = GetSystemDirectoryW(notepad.data(), static_cast<UINT>(notepad.size()));
+    if (!systemLength || systemLength >= notepad.size()) {
+        reportFailure(systemLength ? ERROR_INSUFFICIENT_BUFFER : GetLastError());
+        return;
+    }
+    notepad.resize(systemLength);
+    notepad += L"\\notepad.exe";
+    // Use explicit paths and quote both arguments for folders containing spaces.
+    std::wstring command = L"\"" + notepad + L"\" \"" + path + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_SHOWNORMAL;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(notepad.c_str(), command.data(), nullptr, nullptr, FALSE,
+        0, nullptr, nullptr, &startup, &process)) {
+        reportFailure(GetLastError());
+        return;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+}
+
 void ShowTrayMenu(HWND window) {
     POINT position{};
     if (!GetCursorPos(&position)) return;
@@ -198,6 +239,7 @@ void ShowTrayMenu(HWND window) {
         && WaitForSingleObject(g_monitorThread, 0) == WAIT_TIMEOUT;
     if (!AppendMenuW(menu, MF_STRING | (canToggle ? MF_ENABLED : MF_GRAYED),
             kToggleTerminalCommand, terminalVisible ? L"Hide Terminal" : L"Show Terminal")
+        || !AppendMenuW(menu, MF_STRING, kEditBlacklistCommand, L"Edit blacklist.txt")
         || !AppendMenuW(menu, MF_STRING | (canReload ? MF_ENABLED : MF_GRAYED),
             kReloadBlacklistCommand, L"Reload blacklist.txt")
         || !AppendMenuW(menu, MF_SEPARATOR, 0, nullptr)
@@ -216,6 +258,7 @@ void ShowTrayMenu(HWND window) {
     DestroyMenu(menu);
     PostMessageW(window, WM_NULL, 0, 0);
     if (command == kToggleTerminalCommand) ToggleTerminal();
+    if (command == kEditBlacklistCommand) EditBlacklist(window);
     if (command == kReloadBlacklistCommand && canReload) {
         g_reloadRequested.store(true);
         Log(L"Blacklist reload requested.");
