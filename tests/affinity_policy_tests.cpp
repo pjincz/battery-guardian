@@ -7,7 +7,12 @@
 
 namespace {
 int failures = 0;
+unsigned int appliedNotifications = 0;
 std::wstring logs;
+
+void OnApplied(const wchar_t*, DWORD, DWORD_PTR) {
+    ++appliedNotifications;
+}
 
 void Check(bool condition, const char* name) {
     printf("%s: %s\n", condition ? "PASS" : "FAIL", name);
@@ -92,7 +97,7 @@ void CheckActualProcess() {
     Check(saved, "Write blacklist fixture");
     logs.clear();
     affinity::Policy policy;
-    policy.Initialize(Capture);
+    policy.Initialize(Capture, OnApplied);
     Check(policy.Contains(filename.c_str()), "Load blacklist from exe directory, not working directory");
     const auto replaceFixture = [&](const std::string& contents) {
         HANDLE replacement = CreateFileW(fixture.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -133,20 +138,24 @@ void CheckActualProcess() {
     // Use a custom original mask so restoring all CPUs cannot accidentally pass.
     original = system & (~system + 1);
     Check(SetProcessAffinityMask(process.hProcess, original) != FALSE, "Set custom original affinity");
+    const unsigned int noticesBeforeSkipped = appliedNotifications;
     Check(!policy.Apply(process.dwProcessId, L"not-listed.exe", Now()), "Unlisted process unchanged");
     Check(!policy.Apply(process.dwProcessId, L"wrong-name.exe", Now()), "Mismatched process identity rejected");
     Check(!policy.Apply(process.dwProcessId, filename.c_str(), 1), "Stale event rejected");
+    Check(appliedNotifications == noticesBeforeSkipped, "Skipped processes do not trigger notifications");
     DWORD_PTR afterSkipped = 0;
     Check(GetProcessAffinityMask(process.hProcess, &afterSkipped, &system) && afterSkipped == original,
         "Skipped events preserve original affinity");
     const bool applied = policy.Apply(process.dwProcessId, filename.c_str(), Now());
     if (expected) {
         Check(applied, "Set real E-core affinity on owned process");
+        Check(appliedNotifications == noticesBeforeSkipped + 1, "Successful binding triggers a notification");
         DWORD_PTR actual = 0;
         Check(GetProcessAffinityMask(process.hProcess, &actual, &system)
             && actual == (expected & system), "Read back exact E-core affinity mask");
         policy.Apply(process.dwProcessId, filename.c_str(), Now());
         policy.Apply(process.dwProcessId, filename.c_str(), Now());
+        Check(appliedNotifications == noticesBeforeSkipped + 1, "Repeated unchanged bindings do not notify again");
         policy.UnloadBlacklist();
         Check(!policy.Contains(filename.c_str()), "Unloading disables blacklist matching");
         Check(GetProcessAffinityMask(process.hProcess, &actual, &system) && actual == original,

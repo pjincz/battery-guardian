@@ -164,8 +164,9 @@ DWORD_PTR SelectEfficiencyMask(const std::vector<Core>& cores) {
     return mask;
 }
 
-void Policy::Initialize(Logger logger) {
+void Policy::Initialize(Logger logger, AppliedCallback onApplied) {
     log_ = logger;
+    onApplied_ = onApplied;
     names_.clear();
     mask_ = 0;
     mask_ = DetectEfficiencyMask(log_);
@@ -278,7 +279,7 @@ bool Policy::Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTim
             ++saved;
         }
     }
-    const std::wstring label = std::wstring(eventName) + L" (PID " + std::to_wstring(processId) + L")";
+    std::wstring label = std::wstring(eventName) + L" (PID " + std::to_wstring(processId) + L")";
     if (!mask_) {
         log_((label + L": skipped; E-core binding is unavailable.").c_str());
         return false;
@@ -299,6 +300,7 @@ bool Policy::Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTim
         return false;
     }
     image.resize(length);
+    label = L"pid=" + std::to_wstring(processId) + L" exe=\"" + image + L"\"";
     const std::wstring actualName = image.substr(image.find_last_of(L"\\/") + 1);
     const ULONGLONG creationTime = (static_cast<ULONGLONG>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
     if (!eventTime || creationTime > eventTime
@@ -328,12 +330,16 @@ bool Policy::Apply(DWORD processId, const wchar_t* eventName, ULONGLONG eventTim
         saved = originals_.end();
     }
     // Repeated scans/events must not replace the first, pre-modification mask.
-    if (saved == originals_.end()) {
-        originals_.emplace(processId, OriginalAffinity{process.Release(), creationTime, previous, actualName});
+    const bool firstApplication = saved == originals_.end();
+    if (firstApplication) {
+        originals_.emplace(processId, OriginalAffinity{process.Release(), creationTime, previous, image});
     }
     wchar_t maskText[32]{};
     swprintf_s(maskText, L"0x%llX", static_cast<unsigned long long>(target));
-    log_((label + L": bound to E cores; affinity mask " + maskText + L".").c_str());
+    log_((L"AFFINITY " + label + L" mask=" + maskText).c_str());
+    if (onApplied_ && (firstApplication || previous != target)) onApplied_(actualName.c_str(), processId, target);
     return true;
 }
 } // namespace affinity
+
+

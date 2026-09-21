@@ -30,7 +30,8 @@ void Flush() {
         SendMessageW(edit, EM_SETSEL, 0, static_cast<LPARAM>(remove));
         SendMessageW(edit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L""));
     }
-    SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(-1), -1);
+    const int end = GetWindowTextLengthW(edit);
+    SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(end), static_cast<LPARAM>(end));
     SendMessageW(edit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
     SendMessageW(edit, EM_SCROLLCARET, 0, 0);
 }
@@ -108,3 +109,4 @@ void Destroy() {
     if (oldWindow) DestroyWindow(oldWindow);
 }
 } // namespace log_window
+

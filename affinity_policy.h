@@ -7,6 +7,7 @@
 
 namespace affinity {
 using Logger = void (*)(const wchar_t*);
+using AppliedCallback = void (*)(const wchar_t*, DWORD, DWORD_PTR);
 
 struct Core {
     BYTE efficiencyClass;
@@ -25,7 +26,7 @@ public:
     ~Policy();
     Policy(const Policy&) = delete;
     Policy& operator=(const Policy&) = delete;
-    void Initialize(Logger logger);
+    void Initialize(Logger logger, AppliedCallback onApplied = nullptr);
     bool LoadBlacklist();
     void UnloadBlacklist();
     bool Reload();
@@ -39,6 +40,7 @@ private:
     std::vector<std::wstring> names_;
     DWORD_PTR mask_ = 0;
     Logger log_ = nullptr;
+    AppliedCallback onApplied_ = nullptr;
     struct OriginalAffinity {
         HANDLE process;
         ULONGLONG creationTime;

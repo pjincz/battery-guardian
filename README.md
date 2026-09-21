@@ -5,7 +5,7 @@
 通过命名 Mutex 保证同一 Windows 会话内只运行一个实例。重复启动时显示提示框，点击 OK 后退出新实例，原实例继续运行。
 
 - 启动后显示系统默认应用程序托盘图标和终端式日志窗口。
-- 通过 Windows 自带 WMI 的 `Win32_ProcessStartTrace` 事件监听新进程，每行输出一个 exe 文件名（不包含完整路径）；启动和重载配置后还会扫描全部运行中的进程，为命中的进程应用规则。
+- 通过 Windows 自带 WMI 的 `Win32_ProcessStartTrace` 事件监听新进程，输出带时间戳的进程路径、创建时间和父进程信息；启动和重载配置后还会扫描全部运行中的进程，为命中的进程应用规则。
 - 监听运行在独立线程；退出时停止监听并释放 WMI、线程和日志窗口资源。
 - 启动时读取 exe 同目录下的 `blacklist.txt`，命中的新进程通过 `SetProcessAffinityMask` 绑定到 E 核。
 - 右键图标显示“Exit”菜单，点击后删除图标并退出程序。
@@ -14,6 +14,7 @@
 - 右键菜单的 `Reload blacklist.txt` 重新读取名单，日志窗口显示加载结果；监听线程未运行时该选项不可用。
 - `Reload blacklist.txt` 前的 `Edit blacklist.txt` 使用 `notepad.exe` 打开 exe 同目录下的名单文件；编辑保存后点击 `Reload blacklist.txt` 应用修改。
 - Windows 资源管理器重启后自动重新添加托盘图标。
+- 成功应用 E 核亲和性后使用系统托盘气泡通知提示，包含文件名、PID 和掩码。约 1 秒内的多个成功结果合并通知；同一进程重复事件且亲和性已正确时不重复通知。通知不播放声音，点击可打开日志窗口。实际展示样式及是否弹出由 Windows 通知设置控制。
 
 配置生命周期统一为 `LoadBlacklist`（读取并应用）和 `UnloadBlacklist`（停止匹配并恢复）。启动时先建立 WMI 订阅，再加载名单，只进行一次全量扫描；重载执行卸载再加载；正常退出通过卸载恢复设置。
 
@@ -76,3 +77,16 @@ ctest --test-dir out -C Release --output-on-failure
 ```
 
 测试覆盖黑名单解析、核类型选择以及对测试自身创建的进程设置和回读亲和性；没有可识别 E 核的机器会跳过实际 E 核绑定检查。完整 WMI 事件链需要足够权限。
+
+## 日志字段
+
+每条记录保持一行，统一使用本地时间戳 `[YYYY-MM-DD HH:mm:ss.SSS]`。
+进程启动格式：`START pid=123 exe="C:\Apps\app.exe" born="2026-09-21 14:00:42.700" ppid=456 parent="C:\Apps\parent.exe"`。
+亲和性设置格式：`AFFINITY pid=123 exe="C:\Apps\app.exe" mask=0xF0`。
+完整路径保留，字符串字段用双引号包围，缺失值为 `?`。
+进程路径不可读时附加 `name="app.exe"`，保留事件中的文件名。
+查询失败时附加 `err=OpenProcess:87` 等错误；父进程错误使用 `perr=`。
+其他状态包括 `no-event-time`、`pid-reused`、`identity-changed`、`no-pid`、`no-ppid` 和 `no-child-time`。
+创建时间为进程实际创建时间，不以事件接收时间代替。
+父进程信息查询前会校验创建时间；子进程创建时间不可读时，不推测父进程身份。
+

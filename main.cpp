@@ -10,10 +10,13 @@
 #include "affinity_policy.h"
 #include "log_window.h"
 #include "app_icon.h"
+#include "process_log.h"
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"BatteryGuardianTrayWindow";
 constexpr UINT kTrayMessage = WM_APP + 1;
+constexpr UINT kAffinityNoticeMessage = WM_APP + 2;
+constexpr UINT_PTR kAffinityNoticeTimer = 1;
 constexpr UINT kTrayId = 1;
 constexpr UINT kExitCommand = 1001;
 constexpr UINT kToggleTerminalCommand = 1002;
@@ -24,9 +27,31 @@ HANDLE g_monitorThread = nullptr;
 UINT g_taskbarCreated = 0;
 HANDLE g_logOutput = INVALID_HANDLE_VALUE;
 HWND g_consoleWindow = nullptr;
+SRWLOCK g_noticeLock = SRWLOCK_INIT;
+HWND g_noticeWindow = nullptr;
+ULONG g_noticeCount = 0;
+std::wstring g_noticeFirst;
+bool g_noticePending = false;
+
+void QueueAffinityNotice(const wchar_t* name, DWORD pid, DWORD_PTR mask) {
+    AcquireSRWLockExclusive(&g_noticeLock);
+    if (g_noticeWindow) {
+        if (g_noticeCount == 0) {
+            wchar_t details[96]{};
+            swprintf_s(details, L" (PID %lu)\nBound to E cores (0x%llX).", pid,
+                static_cast<unsigned long long>(mask));
+            g_noticeFirst = std::wstring(name).substr(0, 100) + details;
+        }
+        ++g_noticeCount;
+        if (!g_noticePending) {
+            g_noticePending = PostMessageW(g_noticeWindow, kAffinityNoticeMessage, 0, 0) != FALSE;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_noticeLock);
+}
 
 void Log(const wchar_t* text) {
-    const std::wstring line = std::wstring(text) + L"\r\n";
+    const std::wstring line = L"[" + process_log::Timestamp() + L"] " + text + L"\r\n";
     log_window::Write(line.c_str());
     if (!g_logOutput || g_logOutput == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
@@ -50,6 +75,16 @@ void LogError(const wchar_t* operation, HRESULT error) {
     if (error == E_ACCESSDENIED || error == WBEM_E_ACCESS_DENIED) {
         Log(L"Access denied. Check WMI permissions or system security policy.");
     }
+}
+
+bool ReadEventPid(IWbemClassObject* event, const wchar_t* property, DWORD& value) {
+    VARIANT data;
+    VariantInit(&data);
+    const HRESULT result = event->Get(property, 0, &data, nullptr, nullptr);
+    const bool valid = SUCCEEDED(result) && (data.vt == VT_I4 || data.vt == VT_UI4);
+    if (valid) value = data.vt == VT_UI4 ? data.ulVal : static_cast<DWORD>(data.lVal);
+    VariantClear(&data);
+    return valid;
 }
 
 DWORD WINAPI MonitorProcesses(void* context) {
@@ -96,7 +131,7 @@ DWORD WINAPI MonitorProcesses(void* context) {
         if (FAILED(result)) return result;
 
         // Subscribe first so a single load-time scan leaves no startup event gap.
-        policy.Initialize(Log);
+        policy.Initialize(Log, QueueAffinityNotice);
         Log(L"Listening for process starts. Use the tray Exit menu to stop.");
         while (WaitForSingleObject(stopEvent, 0) == WAIT_TIMEOUT) {
             IWbemClassObject* event = nullptr;
@@ -118,24 +153,20 @@ DWORD WINAPI MonitorProcesses(void* context) {
                 VariantInit(&name);
                 const HRESULT propertyResult = event->Get(L"ProcessName", 0, &name, nullptr, nullptr);
                 if (SUCCEEDED(propertyResult) && name.vt == VT_BSTR && name.bstrVal) {
-                    Log(name.bstrVal);
+                    DWORD pid = 0, parentPid = 0;
+                    const bool pidKnown = ReadEventPid(event, L"ProcessID", pid);
+                    const bool parentKnown = ReadEventPid(event, L"ParentProcessID", parentPid);
+                    VARIANT eventTime;
+                    VariantInit(&eventTime);
+                    HRESULT details = event->Get(L"TIME_CREATED", 0, &eventTime, nullptr, nullptr);
+                    if (SUCCEEDED(details)) details = VariantChangeType(&eventTime, &eventTime, 0, VT_UI8);
+                    const ULONGLONG ticks = SUCCEEDED(details) ? eventTime.ullVal : 0;
+                    Log(process_log::StartMessage(pid, pidKnown, name.bstrVal, ticks, parentPid, parentKnown).c_str());
                     if (policy.Contains(name.bstrVal)) {
-                        VARIANT processId;
-                        VARIANT eventTime;
-                        VariantInit(&processId);
-                        VariantInit(&eventTime);
-                        HRESULT details = event->Get(L"ProcessID", 0, &processId, nullptr, nullptr);
-                        if (SUCCEEDED(details)) details = event->Get(L"TIME_CREATED", 0, &eventTime, nullptr, nullptr);
-                        if (SUCCEEDED(details)) details = VariantChangeType(&eventTime, &eventTime, 0, VT_UI8);
-                        if (SUCCEEDED(details) && (processId.vt == VT_I4 || processId.vt == VT_UI4)) {
-                            const DWORD pid = processId.vt == VT_UI4 ? processId.ulVal : static_cast<DWORD>(processId.lVal);
-                            policy.Apply(pid, name.bstrVal, eventTime.ullVal);
-                        } else {
-                            LogError(L"Read process start details", FAILED(details) ? details : E_UNEXPECTED);
-                        }
-                        VariantClear(&eventTime);
-                        VariantClear(&processId);
+                        if (pidKnown && ticks) policy.Apply(pid, name.bstrVal, ticks);
+                        else LogError(L"Read process start details", FAILED(details) ? details : E_UNEXPECTED);
                     }
+                    VariantClear(&eventTime);
                 } else {
                     LogError(L"Read ProcessName", FAILED(propertyResult) ? propertyResult : E_UNEXPECTED);
                 }
@@ -169,6 +200,29 @@ bool AddTrayIcon(HWND window) {
     if (!icon.hIcon) return false;
     lstrcpyW(icon.szTip, L"Battery Guardian");
     return Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
+}
+
+void ShowAffinityNotice(HWND window) {
+    KillTimer(window, kAffinityNoticeTimer);
+    AcquireSRWLockExclusive(&g_noticeLock);
+    const ULONG count = g_noticeCount;
+    std::wstring text;
+    text.swap(g_noticeFirst);
+    g_noticeCount = 0;
+    g_noticePending = false;
+    ReleaseSRWLockExclusive(&g_noticeLock);
+    if (!count) return;
+    if (count > 1) text += L"\nAlso applied to " + std::to_wstring(count - 1) + L" other process(es).";
+
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = window;
+    icon.uID = kTrayId;
+    icon.uFlags = NIF_INFO;
+    icon.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND | NIIF_RESPECT_QUIET_TIME;
+    lstrcpyW(icon.szInfoTitle, L"Battery Guardian - E-core binding");
+    lstrcpynW(icon.szInfo, text.c_str(), ARRAYSIZE(icon.szInfo));
+    if (!Shell_NotifyIconW(NIM_MODIFY, &icon)) Log(L"Failed to submit the affinity notification.");
 }
 
 void RemoveTrayIcon(HWND window) {
@@ -275,16 +329,34 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     switch (message) {
     case WM_CREATE:
         return AddTrayIcon(window) ? 0 : -1;
+    case kAffinityNoticeMessage:
+        // Collect startup scans and multi-process launches into one notification.
+        if (!SetTimer(window, kAffinityNoticeTimer, 1000, nullptr)) ShowAffinityNotice(window);
+        return 0;
+    case WM_TIMER:
+        if (wParam == kAffinityNoticeTimer) ShowAffinityNotice(window);
+        return 0;
     case kTrayMessage:
         if (wParam == kTrayId) {
             if (lParam == WM_LBUTTONUP) ToggleTerminal();
             else if (lParam == WM_RBUTTONUP) ShowTrayMenu(window);
+            else if (lParam == NIN_BALLOONUSERCLICK && g_consoleWindow) {
+                ShowWindow(g_consoleWindow, SW_RESTORE);
+                SetForegroundWindow(g_consoleWindow);
+            }
         }
         return 0;
     case WM_CLOSE:
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
+        AcquireSRWLockExclusive(&g_noticeLock);
+        g_noticeWindow = nullptr;
+        g_noticeCount = 0;
+        g_noticeFirst.clear();
+        g_noticePending = false;
+        ReleaseSRWLockExclusive(&g_noticeLock);
+        KillTimer(window, kAffinityNoticeTimer);
         RemoveTrayIcon(window);
         PostQuitMessage(0);
         return 0;
@@ -348,6 +420,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     ShowWindow(g_consoleWindow, SW_SHOW);
 
+    AcquireSRWLockExclusive(&g_noticeLock);
+    g_noticeWindow = window;
+    ReleaseSRWLockExclusive(&g_noticeLock);
+
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     HANDLE monitorThread = nullptr;
     if (stopEvent) {
@@ -376,3 +452,4 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     log_window::Destroy();
     return result == -1 ? 1 : static_cast<int>(message.wParam);
 }
+

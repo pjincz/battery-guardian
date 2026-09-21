@@ -48,13 +48,28 @@ int main() {
         "Logs are retained and updated while hidden");
     ShowWindow(window, SW_SHOWNOACTIVATE);
     Check(IsWindowVisible(window) != FALSE, "Show Terminal restores the window");
+    SendMessageW(edit, EM_SETSEL, 3, 10);
+    log_window::Write(L"Appended after selection.\r\n");
+    Pump();
+    GetWindowTextW(edit, text, 256);
+    Check(std::wstring(text) == L"Before closing.\r\nWritten while hidden.\r\nAppended after selection.\r\n",
+        "New logs append after selecting old text");
     SendMessageW(window, WM_CLOSE, 0, 0);
     Check(IsWindow(window) && !IsWindowVisible(window), "Repeated close keeps the window alive");
     log_window::Write(std::wstring(300000, L'x').c_str());
     Pump();
     Check(GetWindowTextLengthW(edit) <= 256 * 1024, "Log history is bounded");
+    log_window::Write(L"TAIL");
+    Pump();
+    std::wstring history(static_cast<size_t>(GetWindowTextLengthW(edit)) + 1, L'\0');
+    const int copied = GetWindowTextW(edit, history.data(), static_cast<int>(history.size()));
+    history.resize(static_cast<size_t>(copied));
+    Check(history.size() >= 4 && history.substr(history.size() - 4) == L"TAIL",
+        "New logs append at the end after history trimming");
     log_window::Destroy();
     Check(!IsWindow(window), "Explicit shutdown destroys the log window");
     printf("Failures: %d\n", failures);
     return failures ? 1 : 0;
 }
+
+
