@@ -366,6 +366,42 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 }
 } // namespace
 
+// Opening dwm.exe with PROCESS_SET_INFORMATION failed with ERROR_ACCESS_DENIED
+// even when running as administrator. Elevation alone does not enable SeDebugPrivilege;
+// our diagnostic confirmed that enabling it granted the required access on the tested system.
+// Enable it before monitoring/scanning so affinity changes can reach such processes.
+// This does not bypass protected-process restrictions; failure is logged and monitoring continues.
+static void EnableDebugPrivilege() {
+    HANDLE token = nullptr;
+    const wchar_t* operation = L"OpenProcessToken";
+    DWORD error = ERROR_SUCCESS;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        error = GetLastError();
+    } else {
+        TOKEN_PRIVILEGES privileges{};
+        privileges.PrivilegeCount = 1;
+        operation = L"LookupPrivilegeValue";
+        if (!LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &privileges.Privileges[0].Luid)) {
+            error = GetLastError();
+        } else {
+            privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            operation = L"AdjustTokenPrivileges";
+            SetLastError(ERROR_SUCCESS);
+            const BOOL adjusted = AdjustTokenPrivileges(token, FALSE, &privileges, 0, nullptr, nullptr);
+            error = GetLastError();
+            // TRUE can still mean ERROR_NOT_ALL_ASSIGNED: the token lacks this privilege.
+            if (!adjusted && error == ERROR_SUCCESS) error = ERROR_GEN_FAILURE;
+        }
+        CloseHandle(token);
+    }
+    if (error == ERROR_SUCCESS) {
+        Log(L"PRIVILEGE name=SeDebugPrivilege enabled=1");
+    } else {
+        Log((L"PRIVILEGE name=SeDebugPrivilege enabled=0 err=" + std::wstring(operation)
+            + L":" + std::to_wstring(error)).c_str());
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // Keep the named mutex alive until all shutdown cleanup has completed.
     struct InstanceMutex {
@@ -419,6 +455,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return 1;
     }
     ShowWindow(g_consoleWindow, SW_SHOW);
+    EnableDebugPrivilege();
 
     AcquireSRWLockExclusive(&g_noticeLock);
     g_noticeWindow = window;
@@ -452,4 +489,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     log_window::Destroy();
     return result == -1 ? 1 : static_cast<int>(message.wParam);
 }
+
+
 

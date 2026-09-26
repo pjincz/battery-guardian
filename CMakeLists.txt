@@ -9,7 +9,7 @@ enable_language(RC)
 add_executable(BatteryGuardian WIN32 main.cpp affinity_policy.cpp log_window.cpp BatteryGuardian.rc)
 target_include_directories(BatteryGuardian PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(BatteryGuardian PRIVATE cxx_std_17)
-target_link_libraries(BatteryGuardian PRIVATE user32 gdi32 shell32 ole32 oleaut32 wbemuuid)
+target_link_libraries(BatteryGuardian PRIVATE advapi32 user32 gdi32 shell32 ole32 oleaut32 wbemuuid)
 if(MSVC)
     target_compile_options(BatteryGuardian PRIVATE /W4 /utf-8)
     # The resource file embeds our administrator manifest instead of a generated one.
@@ -52,4 +52,5 @@ if(BATTERY_GUARDIAN_BUILD_TESTS)
     endif()
     add_test(NAME process_log COMMAND process_log_tests)
 endif()
+
 
